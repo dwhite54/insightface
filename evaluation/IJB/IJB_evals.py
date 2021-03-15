@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 import os
 import numpy as np
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from skimage import transform
 from sklearn.preprocessing import normalize
 from sklearn.metrics import roc_curve, auc
+from sklearn.linear_model import Ridge, LinearRegression
 import pandas as pd
 import cv2
 
@@ -59,7 +60,7 @@ class Torch_model_interf:
         imgs = imgs.transpose(0, 3, 1, 2).copy().astype("float32")
         imgs = (imgs - 127.5) * 0.0078125
         output = self.model(self.torch.from_numpy(imgs).to(self.device).float())
-        return output.cpu().detach().numpy()
+        return output.to('cpu').detach().numpy()
 
 
 def keras_model_interf(model_file):
@@ -217,7 +218,7 @@ def extract_gallery_prob_data(data_path, subset, save_path=None, force_reload=Fa
     return gallery_templates, gallery_subject_ids, probe_mixed_templates, probe_mixed_subject_ids
 
 
-def get_embeddings(model_interf, img_names, landmarks, batch_size=64, flip=True):
+def get_embeddings(model_interf, img_names, landmarks, batch_size=64, flip=True, M=None):
     steps = int(np.ceil(len(img_names) / batch_size))
     embs, embs_f = [], []
     for batch_id in tqdm(range(0, len(img_names), batch_size), "Embedding", total=steps):
@@ -227,6 +228,7 @@ def get_embeddings(model_interf, img_names, landmarks, batch_size=64, flip=True)
         embs.extend(model_interf(ndimages))
         if flip:
             embs_f.extend(model_interf(ndimages[:, :, ::-1, :]))
+            
     return np.array(embs), np.array(embs_f)
 
 
@@ -269,16 +271,19 @@ def image2template_feature(img_feats=None, templates=None, medias=None, choose_t
     return template_norm_feats, unique_templates, unique_subjectids
 
 
-def verification_11(template_norm_feats=None, unique_templates=None, p1=None, p2=None, batch_size=100000):
+def verification_11(template_norm_feats=None, unique_templates=None, p1=None, p2=None, template_norm_feats_right=None, batch_size=100000):
     template2id = np.zeros(max(unique_templates) + 1, dtype=int)
     for count_template, uqt in enumerate(unique_templates):
-        template2id[uqt] = count_template
+        template2id[uqt] = count_template        
 
     steps = int(np.ceil(len(p1) / batch_size))
     score = []
     for id in tqdm(range(steps), "Verification"):
         feat1 = template_norm_feats[template2id[p1[id * batch_size : (id + 1) * batch_size]]]
-        feat2 = template_norm_feats[template2id[p2[id * batch_size : (id + 1) * batch_size]]]
+        if template_norm_feats_right is not None:
+            feat2 = template_norm_feats_right[template2id[p2[id * batch_size : (id + 1) * batch_size]]]
+        else:
+            feat2 = template_norm_feats[template2id[p2[id * batch_size : (id + 1) * batch_size]]]
         score.extend(np.sum(feat1 * feat2, -1))
     return np.array(score)
 
@@ -339,10 +344,14 @@ def evaluation_1N(query_feats, gallery_feats, query_ids, reg_ids):
 
 
 class IJB_test:
-    def __init__(self, model_file, data_path, subset, batch_size=64, force_reload=False, restore_embs=None):
+    def __init__(self, model_file, data_path, subset, batch_size=64, force_reload=False, restore_embs_left=None, restore_embs_right=None, fit_mapping=False, decay_coef=0.0, fit_flips=False):
         templates, medias, p1, p2, label, img_names, landmarks, face_scores = extract_IJB_data_11(
             data_path, subset, force_reload=force_reload
         )
+        self.embs_right = None
+        self.embs_f_right = None
+        self.mapping = None
+        
         if model_file != None:
             if model_file.endswith(".h5"):
                 interf_func = keras_model_interf(model_file)
@@ -351,33 +360,77 @@ class IJB_test:
             else:
                 interf_func = Mxnet_model_interf(model_file)
             self.embs, self.embs_f = get_embeddings(interf_func, img_names, landmarks, batch_size=batch_size)
-        elif restore_embs != None:
-            print(">>>> Reload embeddings from:", restore_embs)
-            aa = np.load(restore_embs)
-            if "embs" in aa and "embs_f" in aa:
+        elif restore_embs_left is not None:
+            print(">>>> Reload (left) embeddings from:", restore_embs_left)
+            aa = np.load(restore_embs_left)
+            if '.npz' in restore_embs_left and "embs" in aa and "embs_f" in aa:
                 self.embs, self.embs_f = aa["embs"], aa["embs_f"]
+            elif '.npy' in restore_embs_left:
+                self.embs, self.embs_f = aa, aa
             else:
-                print("ERROR: %s NOT containing embs / embs_f" % restore_embs)
+                print("ERROR: %s NOT containing embs / embs_f" % restore_embs_left)
                 exit(1)
+            if restore_embs_right is not None:
+                print(">>>> Reload (right) embeddings from:", restore_embs_right)
+                bb = np.load(restore_embs_right)
+                if '.npz' in restore_embs_right and "embs" in bb and "embs_f" in bb:
+                    self.embs_right, self.embs_f_right = bb["embs"], bb["embs_f"]
+                elif '.npy' in restore_embs_right:
+                    self.embs_right, self.embs_f_right = bb, bb
+                else:
+                    print("ERROR: %s NOT containing embs / embs_f" % restore_embs_right)
+                    exit(1)
+                
+                if fit_mapping:
+                    print(">>>> fit mapping")
+                    mapper = Ridge(fit_intercept=False, normalize=False, alpha=decay_coef)
+                    if fit_flips:
+                        enroll_left = self.embs[:11856]
+                        enroll_right = self.embs_right[:11856]
+                    else:
+                        enroll_left = self.embs[:11856] + self.embs_f[:11856]
+                        enroll_right = self.embs_right[:11856] + self.embs_f_right[:11856]
+                    mapper.fit(enroll_left, enroll_right)
+                    self.mapping = mapper
             print(">>>> Done.")
         self.data_path, self.subset, self.force_reload = data_path, subset, force_reload
         self.templates, self.medias, self.p1, self.p2, self.label = templates, medias, p1, p2, label
         self.face_scores = face_scores.astype(self.embs.dtype)
 
-    def run_model_test_single(self, use_flip_test=True, use_norm_score=False, use_detector_score=True):
+    def run_model_test_single(self, use_flip_test=True, use_norm_score=False, use_detector_score=True, pre_template_map=False):
+        if pre_template_map:
+            embs = self.mapping.predict(self.embs)
+            embs_f = self.mapping.predict(self.embs_f)
+        else:
+            embs = self.embs
+            embs_f = self.embs_f
         img_input_feats = process_embeddings(
-            self.embs,
-            self.embs_f,
-            use_flip_test=use_flip_test,
-            use_norm_score=use_norm_score,
-            use_detector_score=use_detector_score,
-            face_scores=self.face_scores,
+                embs,
+                embs_f,
+                use_flip_test=use_flip_test,
+                use_norm_score=use_norm_score,
+                use_detector_score=use_detector_score,
+                face_scores=self.face_scores,
         )
         template_norm_feats, unique_templates, _ = image2template_feature(img_input_feats, self.templates, self.medias)
-        score = verification_11(template_norm_feats, unique_templates, self.p1, self.p2)
+        if self.embs_right is not None and self.embs_f_right is not None:
+            img_input_feats_right = process_embeddings(
+                self.embs_right,
+                self.embs_f_right,
+                use_flip_test=use_flip_test,
+                use_norm_score=use_norm_score,
+                use_detector_score=use_detector_score,
+                face_scores=self.face_scores,
+            )
+            template_norm_feats_right, _, _ = image2template_feature(img_input_feats_right, self.templates, self.medias)
+            if not pre_template_map:
+                template_norm_feats_right = self.mapping.predict(template_norm_feats_right)
+            score = verification_11(template_norm_feats, unique_templates, self.p1, self.p2, template_norm_feats_right)
+        else:
+            score = verification_11(template_norm_feats, unique_templates, self.p1, self.p2)
         return score
 
-    def run_model_test_bunch(self):
+    def run_model_test_bunch(self, pre_template_map=False):
         from itertools import product
 
         scores, names = [], []
@@ -385,7 +438,7 @@ class IJB_test:
             name = "N{:d}D{:d}F{:d}".format(use_norm_score, use_detector_score, use_flip_test)
             print(">>>>", name, use_norm_score, use_detector_score, use_flip_test)
             names.append(name)
-            scores.append(self.run_model_test_single(use_flip_test, use_norm_score, use_detector_score))
+            scores.append(self.run_model_test_single(use_flip_test, use_norm_score, use_detector_score, pre_template_map))
         return scores, names
 
     def run_model_test_1N(self):
@@ -452,8 +505,8 @@ def plot_roc_and_calculate_tpr(scores, names=None, label=None):
         fpr_dict[name], tpr_dict[name], roc_auc_dict[name] = fpr, tpr, roc_auc
     tpr_result_df = pd.DataFrame(tpr_result, index=x_labels).T
     tpr_result_df.columns.name = "Methods"
-    print(tpr_result_df.to_markdown())
-    # print(tpr_result_df)
+    #print(tpr_result_df.to_markdown())
+    #print(tpr_result_df)
 
     try:
         import matplotlib.pyplot as plt
@@ -461,6 +514,7 @@ def plot_roc_and_calculate_tpr(scores, names=None, label=None):
         fig = plt.figure()
         for name in score_dict:
             plt.plot(fpr_dict[name], tpr_dict[name], lw=1, label="[%s (AUC = %0.4f%%)]" % (name, roc_auc_dict[name] * 100))
+            print("[%s (AUC = %0.4f%%)]" % (name, roc_auc_dict[name] * 100))
 
         plt.xlim([10 ** -6, 0.1])
         plt.ylim([0.3, 1.0])
@@ -471,7 +525,7 @@ def plot_roc_and_calculate_tpr(scores, names=None, label=None):
         plt.xlabel("False Positive Rate")
         plt.ylabel("True Positive Rate")
         plt.title("ROC on IJB")
-        plt.legend(loc="lower right")
+        #plt.legend(loc="lower right")
         plt.tight_layout()
         plt.show()
     except:
@@ -490,6 +544,9 @@ def parse_arguments(argv):
     parser.add_argument("-d", "--data_path", type=str, default="./", help="Dataset path")
     parser.add_argument("-s", "--subset", type=str, default="IJBB", help="Subset test target, could be IJBB / IJBC")
     parser.add_argument("-b", "--batch_size", type=int, default=64, help="Batch size for get_embeddings")
+    parser.add_argument("-c", "--decay_coef", type=float, default=0.0, help="Weight decay coefficient for mapping fitting")
+    parser.add_argument("-r", "--restore_embs_left", type=str, default=default_save_result_name, help="path to result npz containing key 'embs' and 'embs_f'")
+    parser.add_argument("-q", "--restore_embs_right", type=str, default=default_save_result_name, help="path to result npz containing key 'embs' and 'embs_f'")
     parser.add_argument(
         "-R", "--save_result", type=str, default=default_save_result_name, help="Filename for saving / restore result"
     )
@@ -498,8 +555,12 @@ def parse_arguments(argv):
     parser.add_argument("-B", "--is_bunch", action="store_true", help="Run all 8 tests N{0,1}D{0,1}F{0,1}")
     parser.add_argument("-N", "--is_one_2_N", action="store_true", help="Run 1:N test instead of 1:1")
     parser.add_argument("-F", "--force_reload", action="store_true", help="Force reload, instead of using cache")
+    parser.add_argument("-M", "--fit_mapping", action="store_true", help="Fit mapping between left and right embeddings (-r and -q)")
+    parser.add_argument("-Y", "--fit_flips", action="store_true", help="Fit mapping using flipped embeddings also")
+    parser.add_argument("-T", "--pre_template_map", action="store_true", help="Map before generating templates (false for after)")
     parser.add_argument("-P", "--plot_only", nargs="*", type=str, help="Plot saved results, Format 1 2 3 or 1, 2, 3 or *.npy")
     args = parser.parse_known_args(argv)[0]
+    print('args', args)
 
     if args.plot_only != None and len(args.plot_only) != 0:
         # Plot only
@@ -509,8 +570,8 @@ def parse_arguments(argv):
         for ss in args.plot_only:
             score_files.extend(glob(ss.replace(",", "").strip()))
         args.plot_only = score_files
-    elif args.model_file == None and args.save_result == default_save_result_name:
-        print("Please provide -m MODEL_FILE, see `--help` for usage.")
+    elif (args.restore_embs_left is None or args.restore_embs_right is None) and (args.model_file == None and args.save_result == default_save_result_name):
+        print("Please provide -m MODEL_FILE, or restore embeddings, see `--help` for usage.")
         exit(1)
     elif args.model_file != None:
         if args.model_file.endswith(".h5") or args.model_file.endswith(".pth") or args.model_file.endswith(".pt"):
@@ -525,37 +586,100 @@ def parse_arguments(argv):
     return args
 
 
+def main(args):
+    print(args)
+    save_name = os.path.splitext(args.save_result)[0]
+    save_items = {}
+    tt = IJB_test(args.model_file, 
+                  args.data_path, 
+                  args.subset, 
+                  args.batch_size, 
+                  args.force_reload, 
+                  args.restore_embs_left, 
+                  args.restore_embs_right, 
+                  fit_mapping=args.fit_mapping, 
+                  decay_coef=args.decay_coef, 
+                  fit_flips=args.fit_flips)
+    if args.is_one_2_N:  # 1:N test
+        tt.run_model_test_1N(pre_template_map=args.pre_template_map)
+    elif args.is_bunch:  # All 8 tests N{0,1}D{0,1}F{0,1}
+        scores, names = tt.run_model_test_bunch(pre_template_map=args.pre_template_map)
+        names = [save_name + "_" + ii for ii in names]
+        save_items.update({"scores": scores, "names": names})
+    else:  # Basic 1:1 N0D1F1 test
+        score = tt.run_model_test_single(pre_template_map=args.pre_template_map)
+        scores, names = [score], [save_name]
+        save_items.update({"scores": scores, "names": names})
+
+    if args.save_embeddings:
+        save_items.update({"embs": tt.embs, "embs_f": tt.embs_f})
+    if args.save_label:
+        save_items.update({"label": tt.label})
+
+    if args.model_file != None or args.save_embeddings:  # embeddings not restored from file or should save_embeddings again
+        save_path = os.path.dirname(args.save_result)
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        np.savez(args.save_result, **save_items)
+
+    if not args.is_one_2_N:
+        df, fig = plot_roc_and_calculate_tpr(scores, names=names, label=tt.label)
+        return df, fig
+    else:
+        return None, None
+    
+
 if __name__ == "__main__":
+    
     import sys
 
     args = parse_arguments(sys.argv[1:])
-    if args.plot_only != None and len(args.plot_only) != 0:
-        plot_roc_and_calculate_tpr(args.plot_only)
-    else:
-        save_name = os.path.splitext(args.save_result)[0]
-        save_items = {}
-        tt = IJB_test(args.model_file, args.data_path, args.subset, args.batch_size, args.force_reload, args.save_result)
-        if args.is_one_2_N:  # 1:N test
-            tt.run_model_test_1N()
-        elif args.is_bunch:  # All 8 tests N{0,1}D{0,1}F{0,1}
-            scores, names = tt.run_model_test_bunch()
-            names = [save_name + "_" + ii for ii in names]
-            save_items.update({"scores": scores, "names": names})
-        else:  # Basic 1:1 N0D1F1 test
-            score = tt.run_model_test_single()
-            scores, names = [score], [save_name]
-            save_items.update({"scores": scores, "names": names})
+    df, fig = main(args)
+    if df is not None and fig is not None:
+        print(df)
+        fig.show()
+    
+#     if args.plot_only != None and len(args.plot_only) != 0:
+#         plot_roc_and_calculate_tpr(args.plot_only)
+#     else:
+#         save_name = os.path.splitext(args.save_result)[0]
+#         save_items = {}
+#         tt = IJB_test(args.model_file, 
+#                       args.data_path, 
+#                       args.subset, 
+#                       args.batch_size, 
+#                       args.force_reload, 
+#                       args.restore_embs_left, 
+#                       args.restore_embs_right, 
+#                       fit_mapping=args.fit_mapping, 
+#                       decay_coef=args.decay_coef, 
+#                       fit_flips=args.fit_flips,
+#                       )
+#         if args.is_one_2_N:  # 1:N test
+#             tt.run_model_test_1N(pre_template_map=args.pre_template_map)
+#         elif args.is_bunch:  # All 8 tests N{0,1}D{0,1}F{0,1}
+#             scores, names = tt.run_model_test_bunch(pre_template_map=args.pre_template_map)
+#             names = [save_name + "_" + ii for ii in names]
+#             save_items.update({"scores": scores, "names": names})
+#         else:  # Basic 1:1 N0D1F1 test
+#             score = tt.run_model_test_single()
+#             scores, names = [score], [save_name]
+#             save_items.update({"scores": scores, "names": names})
 
-        if args.save_embeddings:
-            save_items.update({"embs": tt.embs, "embs_f": tt.embs_f})
-        if args.save_label:
-            save_items.update({"label": tt.label})
+#         if args.save_embeddings:
+#             save_items.update({"embs": tt.embs, "embs_f": tt.embs_f})
+#         if args.save_label:
+#             save_items.update({"label": tt.label})
 
-        if args.model_file != None or args.save_embeddings:  # embeddings not restored from file or should save_embeddings again
-            save_path = os.path.dirname(args.save_result)
-            if not os.path.exists(save_path):
-                os.makedirs(save_path)
-            np.savez(args.save_result, **save_items)
+#         if args.model_file != None or args.save_embeddings:  # embeddings not restored from file or should save_embeddings again
+#             save_path = os.path.dirname(args.save_result)
+#             if not os.path.exists(save_path):
+#                 os.makedirs(save_path)
+#             np.savez(args.save_result, **save_items)
 
-        if not args.is_one_2_N:
-            plot_roc_and_calculate_tpr(scores, names=names, label=tt.label)
+#         if not args.is_one_2_N:
+#             df, fig = plot_roc_and_calculate_tpr(scores, names=names, label=tt.label)
+            
+#             return df, fig
+#         else:
+#             return None, None
