@@ -354,71 +354,68 @@ def evaluation_1N(query_feats, gallery_feats, query_ids, reg_ids):
 
 
 class IJB_test:
-    def __init__(self, model_file, data_path, subset, batch_size=64, force_reload=False, restore_embs_left=None, restore_embs_right=None, fit_mapping=False, decay_coef=0.0, fit_flips=False, is_rotation_map=False, is_procrustes=False, is_wahba=False, explained_variance_proportion=1.0, n_individuals=-1, print_log=True):
+    def __init__(self, args):
         templates, medias, p1, p2, label, img_names, landmarks, face_scores = extract_IJB_data_11(
-            data_path, subset, force_reload=force_reload
+            args.data_path, args.subset, force_reload=args.force_reload
         )
-        self.print_log = print_log
+        self.print_log = args.print_log
         
         self.embs_right = None
         self.embs_f_right = None
         self.mapping = None
         
-        if model_file != None:
-            if model_file.endswith(".h5"):
-                interf_func = keras_model_interf(model_file)
-            elif model_file.endswith(".pth") or model_file.endswith(".pt"):
-                interf_func = Torch_model_interf(model_file)
+        if args.model_file != None:
+            if args.model_file.endswith(".h5"):
+                interf_func = keras_model_interf(args.model_file)
+            elif args.model_file.endswith(".pth") or args.model_file.endswith(".pt"):
+                interf_func = Torch_model_interf(args.model_file)
             else:
-                interf_func = Mxnet_model_interf(model_file)
-            self.embs, self.embs_f = get_embeddings(interf_func, img_names, landmarks, batch_size=batch_size, print_log=self.print_log)
-        elif restore_embs_left is not None:
-            print(">>>> Reload (left) embeddings from:", restore_embs_left)
-            aa = np.load(restore_embs_left)
-            if '.npz' in restore_embs_left and "embs" in aa and "embs_f" in aa:
+                interf_func = Mxnet_model_interf(args.model_file)
+            self.embs, self.embs_f = get_embeddings(interf_func, img_names, landmarks, batch_size=args.batch_size, print_log=self.print_log)
+        elif args.restore_embs_left is not None:
+            print(">>>> Reload (left) embeddings from:", args.restore_embs_left)
+            aa = np.load(args.restore_embs_left)
+            if '.npz' in args.restore_embs_left and "embs" in aa and "embs_f" in aa:
                 self.embs, self.embs_f = aa["embs"], aa["embs_f"]
-            elif '.npy' in restore_embs_left:
+            elif '.npy' in args.restore_embs_left:
                 self.embs, self.embs_f = aa, aa
             else:
-                print("ERROR: %s NOT containing embs / embs_f" % restore_embs_left)
+                print("ERROR: %s NOT containing embs / embs_f" % args.restore_embs_left)
                 exit(1)
-            if restore_embs_right is not None:
-                print(">>>> Reload (right) embeddings from:", restore_embs_right)
-                bb = np.load(restore_embs_right)
-                if '.npz' in restore_embs_right and "embs" in bb and "embs_f" in bb:
+            if args.restore_embs_right is not None:
+                print(">>>> Reload (right) embeddings from:", args.restore_embs_right)
+                bb = np.load(args.restore_embs_right)
+                if '.npz' in args.restore_embs_right and "embs" in bb and "embs_f" in bb:
                     self.embs_right, self.embs_f_right = bb["embs"], bb["embs_f"]
-                elif '.npy' in restore_embs_right:
+                elif '.npy' in args.restore_embs_right:
                     self.embs_right, self.embs_f_right = bb, bb
                 else:
-                    print("ERROR: %s NOT containing embs / embs_f" % restore_embs_right)
+                    print("ERROR: %s NOT containing embs / embs_f" % args.restore_embs_right)
                     exit(1)
                 
-                if fit_mapping:
-                    print(">>>> fit mapping")
-                    mapper = Ridge(fit_intercept=False, normalize=False, alpha=decay_coef)
+                if args.fit_mapping:
+                    print(">>>> fit {} mapping with {} individuals ({})".format(('rotation' if args.is_rotation_map else 'ridge'), args.n_individuals, args.map_normed))
                     train_idx = np.arange(11856)  # all enroll individuals
-                    if n_individuals != -1:
-                        train_idx = np.random.choice(train_idx, n_individuals, replace=False)
-                    if fit_flips:
-                        enroll_left = self.embs[train_idx]
-                        enroll_right = self.embs_right[train_idx]
+                    if args.n_individuals != -1:
+                        train_idx = np.random.choice(train_idx, args.n_individuals, replace=False)
+                    train_left = self.embs[train_idx]
+                    train_right = self.embs_right[train_idx]
+                    # TODO ensure all embeddings have flips--most do not
+#                     if fit_flips:
+#                         enroll_left = self.embs[train_idx] + self.embs_f[train_idx]
+#                         enroll_right = self.embs_right[train_idx] + self.embs_f_right[train_idx]
+#                     else:
+#                         enroll_left = self.embs[train_idx]
+#                         enroll_right = self.embs_right[train_idx]
+                    if args.map_normed:
+                        train_left = normalize(train_left)
+                        train_right = normalize(train_right)
+                    if args.is_rotation_map:
+                        self.mapping = map_tools.fit_procrustes_map(train_left, train_right, is_wahba=True)
                     else:
-                        enroll_left = self.embs[train_idx] + self.embs_f[train_idx]
-                        enroll_right = self.embs_right[train_idx] + self.embs_f_right[train_idx]
-                    if is_procrustes:
-                        self.mapping = map_tools.fit_procrustes_map(self.embs[train_idx], self.embs_right[train_idx], explained_variance_proportion, is_wahba=is_wahba)
-                    elif is_rotation_map:
-                        self.mapping = map_tools.fit_rot_map(self.embs, self.embs_right, train_idx, LR=100.0, EPOCHS=100) # TODO NOT RESPECTIVE OF FLIPS
-                        # TODO clean this up
-                        if self.mapping is None:
-                            print('Training diverged, restarting with LR/10 and EPOCHS*10')
-                            self.mapping = map_tools.fit_rot_map(self.embs, self.embs_right, train_idx, LR=10.0, EPOCHS=1000)  # TODO
-                            if self.mapping is None:
-                                raise Exception('Training again diverged')
-                    else:
-                        self.mapping = map_tools.fit_map(self.embs[train_idx], self.embs_right[train_idx], decay_coef)
-            print(">>>> Done.")
-        self.data_path, self.subset, self.force_reload = data_path, subset, force_reload
+                        self.mapping = map_tools.fit_map(train_left, train_right, args.decay_coef)
+            print(">>>> Done loading, begin verification.")
+        self.data_path, self.subset, self.force_reload = args.data_path, args.subset, args.force_reload
         self.templates, self.medias, self.p1, self.p2, self.label = templates, medias, p1, p2, label
         self.face_scores = face_scores.astype(self.embs.dtype)
 
@@ -427,23 +424,21 @@ class IJB_test:
             #embs = self.mapping.predict(self.embs)
             embs = self.embs @ self.mapping
             #embs_f = self.mapping.predict(self.embs_f)
-            embs_f = self.embs_f @ self.mapping
+            #embs_f = self.embs_f @ self.mapping
         else:
             embs = self.embs
-            embs_f = self.embs_f
+            #embs_f = self.embs_f
         img_input_feats = process_embeddings(
-                embs,
-                embs_f,
+                embs, #embs_f,
                 use_flip_test=use_flip_test,
                 use_norm_score=use_norm_score,
                 use_detector_score=use_detector_score,
                 face_scores=self.face_scores,
         )
         template_norm_feats, unique_templates, _ = image2template_feature(img_input_feats, self.templates, self.medias, print_log=self.print_log)
-        if self.embs_right is not None and self.embs_f_right is not None:
+        if self.embs_right is not None:# and self.embs_f_right is not None:
             img_input_feats_right = process_embeddings(
-                self.embs_right,
-                self.embs_f_right,
+                self.embs_right, #self.embs_f_right,
                 use_flip_test=use_flip_test,
                 use_norm_score=use_norm_score,
                 use_detector_score=use_detector_score,
@@ -582,13 +577,14 @@ def parse_arguments(argv):
     parser.add_argument("-B", "--is_bunch", action="store_true", help="Run all 8 tests N{0,1}D{0,1}F{0,1}")
     parser.add_argument("-N", "--is_one_2_N", action="store_true", help="Run 1:N test instead of 1:1")
     parser.add_argument("-D", "--use_face_scores", action="store_true", help="Use face detector scores during template generation")
+    parser.add_argument("-U", "--use_norm_scores", action="store_true", help="Use normed features during template generation")
     parser.add_argument("-F", "--force_reload", action="store_true", help="Force reload, instead of using cache")
     parser.add_argument("-M", "--fit_mapping", action="store_true", help="Fit mapping between left and right embeddings (-r and -q)")
     parser.add_argument("-Y", "--fit_flips", action="store_true", help="Fit mapping using flipped embeddings also")
     parser.add_argument("-T", "--pre_template_map", action="store_true", help="Map before generating templates (false for after)")
+    parser.add_argument("-Q", "--map_normed", action="store_true", help="Map between normed features")
     parser.add_argument("-R", "--is_rotation_map", action="store_true", help="Fit rotation-only map (using SGD)")
-    parser.add_argument("-C", "--is_procrustes", action="store_true", help="Fit orthonormal map (using procrustes)")
-    parser.add_argument("-W", "--is_wahba", action="store_true", help="Fit rotation-only map (using wahba)")
+    #parser.add_argument("-C", "--is_procrustes", action="store_true", help="Fit orthonormal map (using procrustes)")
     parser.add_argument("-V", "--print_log", action="store_true", help="Print progress bars (omit to only print standard messages)")
     parser.add_argument("-P", "--plot_only", nargs="*", type=str, help="Plot saved results, Format 1 2 3 or 1, 2, 3 or *.npy")
     args = parser.parse_known_args(argv)[0]
@@ -619,25 +615,10 @@ def parse_arguments(argv):
 
 
 def main(args):
-    print(args)
+    #print(args)
     save_name = os.path.splitext(args.save_result)[0]
     save_items = {}
-    tt = IJB_test(args.model_file, 
-                  args.data_path, 
-                  args.subset, 
-                  args.batch_size, 
-                  args.force_reload, 
-                  args.restore_embs_left, 
-                  args.restore_embs_right, 
-                  fit_mapping=args.fit_mapping, 
-                  decay_coef=args.decay_coef, 
-                  fit_flips=args.fit_flips,
-                  is_rotation_map=args.is_rotation_map,
-                  is_procrustes=args.is_procrustes,
-                  is_wahba=args.is_wahba,
-                  explained_variance_proportion=args.explained_variance_proportion,
-                  n_individuals=args.n_individuals,
-                  print_log=args.print_log)
+    tt = IJB_test(args)
     if args.is_one_2_N:  # 1:N test
         tt.run_model_test_1N(fit_mapping=args.fit_mapping)
     elif args.is_bunch:  # All 8 tests N{0,1}D{0,1}F{0,1}
@@ -645,7 +626,7 @@ def main(args):
         names = [save_name + "_" + ii for ii in names]
         save_items.update({"scores": scores, "names": names})
     else:  # Basic 1:1 N0D1F1 test
-        score = tt.run_model_test_single(fit_mapping=args.fit_mapping)
+        score = tt.run_model_test_single(use_flip_test=args.fit_flips, use_norm_score=args.use_norm_scores, use_detector_score=args.use_face_scores, fit_mapping=args.fit_mapping)
         scores, names = [score], [save_name]
         save_items.update({"scores": scores, "names": names})
 
@@ -665,7 +646,7 @@ def main(args):
 
     if args.model_file != None or args.save_embeddings or args.fit_mapping or not args.is_one_2_N:  # embeddings not restored from file or should save_embeddings again
         save_path = os.path.dirname(args.save_result)
-        if not os.path.exists(save_path):
+        if save_path != '' and not os.path.exists(save_path):
             os.makedirs(save_path)
         np.savez(args.save_result, **save_items)
         

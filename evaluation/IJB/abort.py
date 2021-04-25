@@ -1,6 +1,8 @@
 import subprocess
-machines = ['your', 'machines', 'here']  # if one of these is the current machine, put it last or the script will kill itself
+colors = ['blue', 'cyan', 'yellow', 'magenta', 'pink', 'teal', 'aqua']
+bugs = ['ant', 'antlion', 'aphid', 'assassin-bug', 'bee', 'centipede', 'cockroach', 'cricket', 'damselfly', 'deer-fly', 'dragonfly', 'dung-beetle', 'flea', 'hornet', 'katydid', 'ladybug', 'lice', 'maggot', 'mosquito', 'moth', 'preying-mantis', 'scorpion', 'termite', 'tick', 'wasp', 'weevil']
 procs = []
+machines = colors + bugs
 for machine in machines:
     procs.append(subprocess.Popen('ssh {machine} -T "killall --user $USER python"'.format(machine=machine),
                             shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE))

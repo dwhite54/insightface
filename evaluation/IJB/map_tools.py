@@ -28,7 +28,7 @@ def fit_map(x, y, decay_coef=0.0):
     inv_mapper.fit(x, y)
     return inv_mapper.coef_.T
 
-def fit_procrustes_map(x, y, explained_variance_proportion=1.0, is_wahba=False, do_plot=False):
+def fit_procrustes_map(x, y, is_wahba=False):
     U, s, Vh = np.linalg.svd(x.T @ y)
     if is_wahba:
         m = np.ones(s.shape)

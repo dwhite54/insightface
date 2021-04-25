@@ -133,17 +133,21 @@ def get_proc_args():
     proc_args = []
     tuple_args = []
     for is_rotation_map in [True, False]:
-        for n_individuals in list(2**np.arange(5, 14):
-            #for n_dims in 2**np.arange(5, 8):
-            for left_embs, left_dataset, left_architecture, left_head in embs_list:
-                for right_embs, right_dataset, right_architecture, right_head in embs_list:
-                    arg = "-s IJBC -b 64 -c 0.0001 "
+        #for n_dims in 2**np.arange(5, 8):
+        for left_embs, left_dataset, left_architecture, left_head in embs_list:
+            for right_embs, right_dataset, right_architecture, right_head in embs_list:
+                if left_embs != right_embs:
+                    n_individuals_list = list(2**np.arange(5, 14)) + [-1]
+                else:
+                    n_individuals_list = [-1]
+                for n_individuals in n_individuals_list:
+                    arg = "-s IJBC -b 64 -c 0.0001 -U -Q -D" # norm features before mapping, before eval, multiply face detector score before eval
                     if left_embs != right_embs:
                         arg += ' -M'
 
-                    arg += ' -r ' + left_embs
-                    arg += ' -q ' + right_embs
-                    arg += ' -n ' + str(int(n_individuals))
+                    arg += ' -r' + left_embs
+                    arg += ' -q' + right_embs
+                    arg += ' -n' + str(int(n_individuals))
 
                     save_result_name = '{}_TO_{}_N{}'.format(
                         left_embs.split('/')[-1].split('.')[0], 
@@ -153,8 +157,8 @@ def get_proc_args():
                         )
 
                     if is_rotation_map:
-                        save_result_name += '_ortho'
-                        arg += ' -R -C'
+                        save_result_name += '_rotation'
+                        arg += ' -R'
                     else:
                         save_result_name += '_ridge'
 
@@ -165,26 +169,22 @@ def get_proc_args():
                     tuple_args.append((is_rotation_map, n_individuals, left_embs, left_dataset, left_architecture, left_head, right_embs, right_dataset, right_architecture, right_head, save_result))
     return proc_args, tuple_args
                     
-def gather_results(tuple_args):
-    cols = np.load(tuple_args[0][-1])['FAR']
-    results = np.zeros((len(tuple_args), len(cols)))
-    for i in range(len(tuple_args)):
-        results[i] = np.load(tuple_args[i][-1])['TAR@FAR']
+# def gather_results(tuple_args):
+#     cols = np.load(tuple_args[0][-1])['FAR']
+#     results = np.zeros((len(tuple_args), len(cols)))
+#     for i in range(len(tuple_args)):
+#         results[i] = np.load(tuple_args[i][-1])['TAR@FAR']
         
-    return results
+#     return results
 
 def main():    
     args, tuple_args = get_proc_args()
     colors = ['blue', 'cyan', 'yellow', 'magenta', 'pink', 'teal', 'aqua']
     bugs = ['ant', 'antlion', 'aphid', 'assassin-bug', 'bee', 'centipede', 'cockroach', 'cricket', 'damselfly', 'deer-fly', 'dragonfly', 'dung-beetle', 'flea', 'hornet', 'katydid', 'ladybug', 'lice', 'maggot', 'mosquito', 'moth', 'preying-mantis', 'scorpion', 'termite', 'tick', 'wasp', 'weevil']
-    schedule_procs(args, colors + bugs, log_fn='test-log.txt', memory_per_process=12000, cpu_per_process=1)
+    schedule_procs(args, colors + bugs, log_fn='dist-log.txt', memory_per_process=12000, cpu_per_process=1)
     
-    results = gather_results(tuple_args)
-    np.save('../../../../results/sensitivity/all.npy', results)
-    if verify_test():
-        print('Success')
-    else:
-        print('Failure')
+#     results = gather_results(tuple_args)
+#     np.save('../../../../results/sensitivity/all.npy', results)
     
 if __name__ == '__main__':
     main()
