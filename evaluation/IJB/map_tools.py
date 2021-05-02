@@ -23,8 +23,8 @@ def flatten_singular_values(M):
     u, _, vh = np.linalg.svd(M, full_matrices=False)
     return u @ vh
     
-def fit_map(x, y, decay_coef=0.0):
-    inv_mapper = sklearn.linear_model.Ridge(fit_intercept=False, normalize=False, alpha=decay_coef)
+def fit_map(x, y):
+    inv_mapper = sklearn.linear_model.LinearRegression(fit_intercept=False, normalize=False)
     inv_mapper.fit(x, y)
     return inv_mapper.coef_.T
 

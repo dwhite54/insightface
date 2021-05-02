@@ -413,7 +413,7 @@ class IJB_test:
                     if args.is_rotation_map:
                         self.mapping = map_tools.fit_procrustes_map(train_left, train_right, is_wahba=True)
                     else:
-                        self.mapping = map_tools.fit_map(train_left, train_right, args.decay_coef)
+                        self.mapping = map_tools.fit_map(train_left, train_right)
             print(">>>> Done loading, begin verification.")
         self.data_path, self.subset, self.force_reload = args.data_path, args.subset, args.force_reload
         self.templates, self.medias, self.p1, self.p2, self.label = templates, medias, p1, p2, label
@@ -565,7 +565,7 @@ def parse_arguments(argv):
     parser.add_argument("-s", "--subset", type=str, default="IJBB", help="Subset test target, could be IJBB / IJBC")
     parser.add_argument("-b", "--batch_size", type=int, default=64, help="Batch size for get_embeddings")
     parser.add_argument("-n", "--n_individuals", type=int, default=-1, help="Number of individuals for fitting map")
-    parser.add_argument("-c", "--decay_coef", type=float, default=0.0, help="Weight decay coefficient for mapping fitting")
+    #parser.add_argument("-c", "--decay_coef", type=float, default=0.0, help="Weight decay coefficient for mapping fitting")
     parser.add_argument("-v", "--explained_variance_proportion", type=float, default=0.0, help="Explained variance for procrustes singular value thresholding")
     parser.add_argument("-r", "--restore_embs_left", type=str, default=default_save_result_name, help="path to result npz containing key 'embs' and 'embs_f'")
     parser.add_argument("-q", "--restore_embs_right", type=str, default=default_save_result_name, help="path to result npz containing key 'embs' and 'embs_f'")
